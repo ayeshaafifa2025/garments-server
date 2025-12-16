@@ -96,6 +96,19 @@ app.post('/products', async (req, res) => {
     }
 });
 
+// Home Page Products API
+app.get('/products/homepage', async (req, res) => {
+    try {
+        const cursor = productCollection.find({ showOnHome: true }).limit(6);
+        
+        const result = await cursor.toArray();
+        res.send(result);
+    } catch (error) {
+        console.error("Error fetching homepage products:", error);
+        res.status(500).send({ message: 'Failed to fetch homepage products' });
+    }
+});
+
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
