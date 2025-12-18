@@ -70,89 +70,183 @@ async function run() {
         const trackingsCollection = db.collection('trackings');
          const paymentCollection = db.collection('payments');
 
-     const logTracking = async (trackingId, status) => {
-            const log = {
-                trackingId,
-                status,
-                details: status.split('_').join(' '),
-                createdAt: new Date()
-            }
-            const result = await trackingsCollection.insertOne(log);
-            return result;
+
+const logTracking = async (trackingId, status, location = 'N/A', note = '') => {
+    const detailsText = `${status}${location !== 'N/A' ? ` at ${location}` : ''}${note ? ` (${note})` : ''}`;
+    const log = {
+        trackingId,
+        status,
+        location, 
+        note,     
+        details: detailsText,
+        createdAt: new Date()
+    }
+    
+  
+    const result = await trackingsCollection.insertOne(log); 
+    return result;
+}
+
+
+     app.post('/orders', async (req, res) => {
+            const order = req.body;
+            const trackingId = generateTrackingId();
+           
+            order.createdAt = new Date();
+            order.trackingId = trackingId;
+
+            logTracking(trackingId, 'pending');
+
+            const result = await ordersCollection.insertOne(order);
+            res.send(result)
+        })
+
+       app.get('/orders/by-id/:id', async (req, res) => {
+    try {
+        const id = req.params.id;
+        if (!id) {
+            return res.status(400).send({ message: 'Order ID is required.' });
+        }
+        
+        const query = { _id: new ObjectId(id) };
+        const order = await ordersCollection.findOne(query);
+
+        if (!order) {
+            return res.status(404).send({ message: 'Order not found.' });
         }
 
-// Tracking related API:
+        res.send(order);
+    } catch (error) {
+        console.error("Error fetching single order by ID:", error);
+        res.status(500).send({ message: 'Failed to retrieve order' });
+    }
+}); 
+
+
+
+
+app.get('/orders/:email', async (req, res) => {
+    try {
+        const email = req.params.email;
+        if (!email) {
+            return res.status(400).send({ message: 'Email parameter is required.' });
+        }
+        
+       
+        const query = { buyerEmail: email };
+        const orders = await ordersCollection.find(query).toArray();
+
+        res.send(orders);
+    } catch (error) {
+        console.error("Error fetching user orders:", error);
+        res.status(500).send({ message: 'Failed to retrieve orders' });
+    }
+});
+
+
+
+app.get('/manager-approved-orders', async (req, res) => {
+    try {
+        const managerEmail = req.query.email; 
+        
+        const APPROVED_STATUS = 'Approved'; 
+
+        if (!managerEmail) {
+            return res.status(400).send({ message: 'Manager Email query parameter is required.' });
+        }
+
+     
+        const query = { 
+            managerEmail: managerEmail,
+            status: APPROVED_STATUS
+        };
+        
+
+        const cursor = ordersCollection.find(query).sort({ approvedAt: -1 });
+        const approvedOrders = await cursor.toArray();
+        
+        res.send(approvedOrders);
+    } catch (error) {
+        console.error("Error fetching manager approved orders:", error); 
+        res.status(500).send({ message: 'Failed to fetch approved orders' });
+    }
+});
+
+app.patch('/orders/:id/tracking', async (req, res) => {
+    try {
+        const id = req.params.id;
+        const { newLogStatus, location = 'N/A', note = '' } = req.body; 
+
+        if (!id || !newLogStatus) {
+            return res.status(400).send({ message: 'Order ID and newLogStatus are required.' });
+        }
+
+      
+        const newLog = {
+            status: newLogStatus,
+            location: location,
+            note: note,
+            timestamp: new Date()
+        };
+        
+        const updateDoc = {
+            $push: { trackingLogs: newLog },
+            $set: { 
+                ...(newLogStatus === 'Delivered' && { status: 'Delivered', deliveredAt: new Date() }),
+                currentTrackingStatus: newLogStatus
+            }
+        };
+
+        const result = await ordersCollection.updateOne( 
+            { _id: new ObjectId(id) },
+            updateDoc
+        );
+
+        if (result.matchedCount === 0) {
+            return res.status(404).send({ message: 'Order not found.' });
+        }
+
+        if (result.modifiedCount > 0) {
+    
+    const updatedOrder = await ordersCollection.findOne({ _id: new ObjectId(id) });
+    
+    if (updatedOrder && updatedOrder.trackingId) {
+        
+        await logTracking(updatedOrder.trackingId, newLogStatus, location, note); 
+        
+    } else {
+        console.warn(`Tracking ID not found for Order ID: ${id}. Cannot log to trackingsCollection.`);
+    }
+}
+        
+        res.send({ success: true, message: `Tracking status updated to ${newLogStatus}`, result });
+
+    } catch (error) {
+        console.error("Error updating tracking status:", error); 
+        res.status(500).send({ message: 'Failed to update tracking status' });
+    }
+});
 
 
 app.get('/trackings/:trackingId', async (req, res) => {
     try {
         const trackingId = req.params.trackingId;
+        if (!trackingId) {
+            return res.status(400).send({ message: 'Tracking ID is required.' });
+        }
         
         const query = { trackingId: trackingId };
-        
-     
-        const cursor = trackingsCollection.find(query).sort({ createdAt: 1 }); 
-        const trackings = await cursor.toArray();
-        
+        const trackings = await trackingsCollection.find(query).sort({ createdAt: 1 }).toArray(); // পুরানো থেকে নতুন
+
         res.send(trackings);
     } catch (error) {
-        console.error("Error fetching tracking data:", error);
-        res.status(500).send({ message: 'Failed to fetch tracking timeline' });
+        console.error("Error fetching tracking logs:", error);
+        res.status(500).send({ message: 'Failed to retrieve tracking logs' });
     }
 });
 
 
-// order  related api
 
-     app.post('/orders', async (req, res) => {
-            const order = req.body;
-            const trackingId = generateTrackingId();
-            // parcel created time
-            order.createdAt = new Date();
-            order.trackingId = trackingId;
-
-            logTracking(trackingId, 'order_created');
-
-            const result = await ordersCollection.insertOne(order);
-            res.send(result)
-        })
-        app.get('/orders/by-id/:id', async (req, res) => {
-    try {
-        const id = req.params.id;
-        if (!ObjectId.isValid(id)) {
-            return res.status(400).send({ message: 'Invalid ID format' });
-        }
-        
-        const query = { _id: new ObjectId(id) };
-        const order = await ordersCollection.findOne(query);
-        
-        if (!order) {
-            return res.status(404).send({ message: 'Order not found' });
-        }
-        
-        res.send(order);
-    } catch (error) {
-        console.error("Error fetching single order:", error);
-        res.status(500).send({ message: 'Failed to fetch order details' });
-    }
-});
-
-app.get('/orders/:email', async (req, res) => {
-    try {
-        const email = req.params.email;
-        
-
-        const query = { buyerEmail: email };
-        
-        const cursor = ordersCollection.find(query).sort({ createdAt: -1 }); 
-        const orders = await cursor.toArray();
-        
-        res.send(orders);
-    } catch (error) {
-        console.error("Error fetching orders:", error);
-        res.status(500).send({ message: 'Failed to fetch user orders' });
-    }
-});
 
 app.patch('/orders/cancel/:id', async (req, res) => {
     try {
@@ -265,9 +359,9 @@ app.patch('/orders/:id/status', async (req, res) => {
         if (result.modifiedCount > 0) {
             let logStatus;
             if (newStatus === 'Approved') {
-                logStatus = 'Order Approved by Manager';
+                logStatus = 'Approved';
             } else if (newStatus === 'Rejected') {
-                logStatus = 'Order Rejected by Manager';
+                logStatus = 'Rejected';
             } else {
                 // ভবিষ্যতে অন্য কোনো স্ট্যাটাস যোগ হলে
                 logStatus = newStatus; 
@@ -377,13 +471,11 @@ app.post('/payment-success', async (req, res) => {
 
         if (session.payment_status === 'paid') {
             
-          
             const essentialOrderData = JSON.parse(session.metadata.orderData);
             
-
             let managerPhoto = null;
             if (essentialOrderData.productId) {
-              
+                
                 const product = await productCollection.findOne({ _id: new ObjectId(essentialOrderData.productId) });
                 managerPhoto = product ? product.managerPhoto : null;
             }
@@ -391,10 +483,8 @@ app.post('/payment-success', async (req, res) => {
             const newOrder = {
                 ...essentialOrderData, 
                 
-          
                 managerPhoto: managerPhoto, 
                 
-              
                 trackingId: trackingId,
                 paymentStatus: 'Paid',
                 status: 'Pending', 
@@ -403,6 +493,12 @@ app.post('/payment-success', async (req, res) => {
             };
 
             const resultOrder = await ordersCollection.insertOne(newOrder);
+            
+            // ⭐ নতুন যুক্ত করা লাইন: PayFirst অর্ডারের জন্য 'Pending' স্ট্যাটাস লগ করা
+            if(resultOrder.insertedId){
+                 await logTracking(trackingId, 'Pending'); 
+            }
+            // ⭐
             
 
             const payment = {
@@ -433,9 +529,82 @@ app.post('/payment-success', async (req, res) => {
     }
 });
 
+// app.post('/payment-success', async (req, res) => { 
+//     const sessionId = req.query.session_id;
+    
+//     try {
+//         const session = await stripe.checkout.sessions.retrieve(sessionId);
 
+//         const transactionId = session.payment_intent;
+        
+//         const paymentExist = await paymentCollection.findOne({ transactionId });
+//         if (paymentExist) {
+//             return res.send({
+//                 message: 'already exists',
+//                 transactionId,
+//                 trackingId: paymentExist.trackingId
+//             });
+//         }
+        
+//         const trackingId = session.metadata.trackingId; 
 
+//         if (session.payment_status === 'paid') {
+            
+          
+//             const essentialOrderData = JSON.parse(session.metadata.orderData);
+            
 
+//             let managerPhoto = null;
+//             if (essentialOrderData.productId) {
+              
+//                 const product = await productCollection.findOne({ _id: new ObjectId(essentialOrderData.productId) });
+//                 managerPhoto = product ? product.managerPhoto : null;
+//             }
+        
+//             const newOrder = {
+//                 ...essentialOrderData, 
+                
+          
+//                 managerPhoto: managerPhoto, 
+                
+              
+//                 trackingId: trackingId,
+//                 paymentStatus: 'Paid',
+//                 status: 'Pending', 
+//                 transactionId: transactionId,
+//                 createdAt: new Date(),
+//             };
+
+//             const resultOrder = await ordersCollection.insertOne(newOrder);
+            
+
+//             const payment = {
+//                 amount: session.amount_total / 100,
+//                 currency: session.currency,
+//                 customerEmail: session.customer_email,
+//                 orderId: resultOrder.insertedId,
+//                 transactionId: transactionId,
+//                 paymentStatus: session.payment_status,
+//                 paidAt: new Date(),
+//                 trackingId: trackingId
+//             };
+            
+//             await paymentCollection.insertOne(payment);
+//             // logTracking(trackingId, 'order_paid'); 
+
+//             return res.send({
+//                 success: true,
+//                 trackingId: trackingId,
+//                 transactionId: transactionId,
+//             });
+//         }
+//         return res.send({ success: false });
+
+//     } catch (error) {
+//         console.error("Payment Success Handler Error:", error);
+//         res.status(500).send({ success: false, error: "Server failed to process payment success." });
+//     }
+// });
     // User related API
 
 
