@@ -704,6 +704,16 @@ app.get('/admin/all-orders', async (req, res) => {
     }
 });
 
+app.get('/users/all', async (req, res) => {
+    try {
+        const users = await userCollection.find({}).toArray();
+        res.send(users);
+    } catch (error) {
+        console.error("Error fetching all users:", error);
+        res.status(500).send({ message: 'Failed to retrieve user list' });
+    }
+});
+
 
 app.patch('/products/:id', async (req, res) => {
     try {
