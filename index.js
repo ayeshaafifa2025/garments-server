@@ -355,7 +355,7 @@ app.patch('/orders/:id/status', async (req, res) => {
             return res.status(404).send({ message: 'Order not found.' });
         }
 
-        // ⭐ ট্র্যাকিং লগ ফিক্স: স্ট্যাটাস আপডেট হলে logTracking ফাংশন কল করা হলো
+  
         if (result.modifiedCount > 0) {
             let logStatus;
             if (newStatus === 'Approved') {
@@ -363,12 +363,11 @@ app.patch('/orders/:id/status', async (req, res) => {
             } else if (newStatus === 'Rejected') {
                 logStatus = 'Rejected';
             } else {
-                // ভবিষ্যতে অন্য কোনো স্ট্যাটাস যোগ হলে
+              
                 logStatus = newStatus; 
             }
             
-            // logTracking ফাংশন কল করা হলো
-            // logTracking ফাংশনটি আপনার তৈরি করা থাকতে হবে।
+            
             await logTracking(trackingId, logStatus); 
         }
 
@@ -529,82 +528,7 @@ app.post('/payment-success', async (req, res) => {
     }
 });
 
-// app.post('/payment-success', async (req, res) => { 
-//     const sessionId = req.query.session_id;
-    
-//     try {
-//         const session = await stripe.checkout.sessions.retrieve(sessionId);
 
-//         const transactionId = session.payment_intent;
-        
-//         const paymentExist = await paymentCollection.findOne({ transactionId });
-//         if (paymentExist) {
-//             return res.send({
-//                 message: 'already exists',
-//                 transactionId,
-//                 trackingId: paymentExist.trackingId
-//             });
-//         }
-        
-//         const trackingId = session.metadata.trackingId; 
-
-//         if (session.payment_status === 'paid') {
-            
-          
-//             const essentialOrderData = JSON.parse(session.metadata.orderData);
-            
-
-//             let managerPhoto = null;
-//             if (essentialOrderData.productId) {
-              
-//                 const product = await productCollection.findOne({ _id: new ObjectId(essentialOrderData.productId) });
-//                 managerPhoto = product ? product.managerPhoto : null;
-//             }
-        
-//             const newOrder = {
-//                 ...essentialOrderData, 
-                
-          
-//                 managerPhoto: managerPhoto, 
-                
-              
-//                 trackingId: trackingId,
-//                 paymentStatus: 'Paid',
-//                 status: 'Pending', 
-//                 transactionId: transactionId,
-//                 createdAt: new Date(),
-//             };
-
-//             const resultOrder = await ordersCollection.insertOne(newOrder);
-            
-
-//             const payment = {
-//                 amount: session.amount_total / 100,
-//                 currency: session.currency,
-//                 customerEmail: session.customer_email,
-//                 orderId: resultOrder.insertedId,
-//                 transactionId: transactionId,
-//                 paymentStatus: session.payment_status,
-//                 paidAt: new Date(),
-//                 trackingId: trackingId
-//             };
-            
-//             await paymentCollection.insertOne(payment);
-//             // logTracking(trackingId, 'order_paid'); 
-
-//             return res.send({
-//                 success: true,
-//                 trackingId: trackingId,
-//                 transactionId: transactionId,
-//             });
-//         }
-//         return res.send({ success: false });
-
-//     } catch (error) {
-//         console.error("Payment Success Handler Error:", error);
-//         res.status(500).send({ success: false, error: "Server failed to process payment success." });
-//     }
-// });
     // User related API
 
 
@@ -623,6 +547,9 @@ app.post('/payment-success', async (req, res) => {
           
             res.send(result);
         })
+
+
+
 
 // Product related API
 app.post('/products', async (req, res) => {
@@ -688,7 +615,7 @@ app.get('/manager-products', async (req, res) => {
         res.status(500).send({ message: 'Failed to fetch manager products' });
     }
 });
-
+// for public
 app.get('/products', async (req, res) => {
     try {
         const cursor = productCollection.find({});
@@ -699,6 +626,122 @@ app.get('/products', async (req, res) => {
         res.status(500).send({ message: 'Failed to fetch all products' });
     }
 });
+
+// for admin only
+
+
+app.patch('/products/:id/toggle-home', async (req, res) => {
+  
+    const id = req.params.id;
+    const { showOnHome } = req.body;
+    
+    if (!ObjectId.isValid(id) || typeof showOnHome !== 'boolean') {
+        return res.status(400).send({ message: 'Invalid ID or status format' });
+    }
+
+    try {
+        const query = { _id: new ObjectId(id) };
+        const updateDoc = {
+            $set: {
+                showOnHome: showOnHome,
+            },
+        };
+
+        const result = await productCollection.updateOne(query, updateDoc);
+        res.send(result);
+    } catch (error) {
+        console.error("Error toggling showOnHome status:", error);
+        res.status(500).send({ message: 'Failed to update product status' });
+    }
+});
+
+app.get('/all-products', async (req, res) => {
+    try {
+        const cursor = productCollection.find({});
+        const result = await cursor.toArray();
+        res.send(result);
+    } catch (error) {
+        console.error("Error fetching all products:", error);
+        res.status(500).send({ message: 'Failed to fetch all products' });
+    }
+});
+
+
+app.get('/admin/all-orders', async (req, res) => {
+    try {
+        const statusFilter = req.query.status; 
+        
+        let query = {};
+
+        if (statusFilter) {
+            if (statusFilter === 'Approved') {
+         
+                query = { 
+                    status: 'Approved', 
+                    $or: [
+                        { currentTrackingStatus: { $exists: false } },
+                        { currentTrackingStatus: null },              
+                        { currentTrackingStatus: "" },                
+                        { currentTrackingStatus: 'Approved' }          
+                    ]
+                };
+
+            } else if (statusFilter === 'Pending' || statusFilter === 'Rejected' || statusFilter === 'Cancelled' || statusFilter === 'Delivered') {
+               
+                query = { status: statusFilter };
+
+            } else {
+            
+                query = { currentTrackingStatus: statusFilter };
+            }
+        }
+        
+        const orders = await ordersCollection.find(query).sort({ _id: -1 }).toArray();
+        res.send(orders);
+    } catch (error) {
+        console.error("Error fetching all orders for admin:", error);
+        res.status(500).send({ message: 'Failed to retrieve all orders' });
+    }
+});
+
+
+app.patch('/products/:id', async (req, res) => {
+    try {
+        const id = req.params.id;
+        const updatedProductData = req.body; 
+        
+     
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).send({ message: 'Invalid product ID format.' });
+        }
+
+        const filter = { _id: new ObjectId(id) };
+        const options = { upsert: false }; 
+
+        
+        const { _id, sellerEmail, ...dataToUpdate } = updatedProductData;
+        
+
+        const updateDoc = {
+            $set: {
+                ...dataToUpdate,
+            
+            },
+        };
+
+        const result = await productCollection.updateOne(filter, updateDoc, options);
+
+        if (result.matchedCount === 0) {
+            return res.status(404).send({ message: 'Product not found for update.' });
+        }
+        
+        res.send(result);
+    } catch (error) {
+        // console.error('Error patching product:', error);
+        res.status(500).send({ message: 'Failed to update product.' });
+    }
+});
+
 
 
 app.get('/products', async (req, res) => {
