@@ -6,11 +6,14 @@ const { MongoClient, ServerApiVersion,ObjectId } = require('mongodb');
 const stripe = require('stripe')(process.env.STRIPE_SECRET);
 const port = process.env.PORT || 3000
 const crypto = require("crypto");
+const admin = require("firebase-admin");
 
-// const admin = require("firebase-admin");
-// admin.initializeApp({
-//   credential: admin.credential.cert(serviceAccount)
-// });
+
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
+const serviceAccount = JSON.parse(decoded);
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
 
 function generateTrackingId() {
     const prefix = "ORD"; // your brand prefix
@@ -26,27 +29,25 @@ app.use(express.json());
 app.use(cors());
 
 
-// const verifyFBToken = async (req, res, next) => {
-//     const token = req.headers.authorization;
-//     console.log(token)
+const verifyFBToken = async (req, res, next) => {
+    const token = req.headers.authorization;
+    console.log(token)
+    if (!token) {
+        return res.status(401).send({ message: 'unauthorized access' })
+    }
+    try {
+        const idToken = token.split(' ')[1];
+        const decoded = await admin.auth().verifyIdToken(idToken);
+        console.log('decoded in the token', decoded);
+        req.decoded_email = decoded.email;
+        next();
+    }
+    catch (err) {
+        return res.status(401).send({ message: 'unauthorized access' })
+    }
 
-//     if (!token) {
-//         return res.status(401).send({ message: 'unauthorized access' })
-//     }
+}
 
-//     try {
-//         const idToken = token.split(' ')[1];
-//         const decoded = await admin.auth().verifyIdToken(idToken);
-//         console.log('decoded in the token', decoded);
-//         req.decoded_email = decoded.email;
-//         next();
-//     }
-//     catch (err) {
-//         return res.status(401).send({ message: 'unauthorized access' })
-//     }
-
-
-// }
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.wstr9pt.mongodb.net/?appName=Cluster0`;
 
@@ -88,7 +89,7 @@ const logTracking = async (trackingId, status, location = 'N/A', note = '') => {
 }
 
 
-     app.post('/orders', async (req, res) => {
+     app.post('/orders',verifyFBToken, async (req, res) => {
             const order = req.body;
             const trackingId = generateTrackingId();
            
@@ -125,7 +126,7 @@ const logTracking = async (trackingId, status, location = 'N/A', note = '') => {
 
 
 
-app.get('/orders/:email', async (req, res) => {
+app.get('/orders/:email',verifyFBToken, async (req, res) => {
     try {
         const email = req.params.email;
         if (!email) {
@@ -145,7 +146,7 @@ app.get('/orders/:email', async (req, res) => {
 
 
 
-app.get('/manager-approved-orders', async (req, res) => {
+app.get('/manager-approved-orders',verifyFBToken, async (req, res) => {
     try {
         const managerEmail = req.query.email; 
         
@@ -172,7 +173,7 @@ app.get('/manager-approved-orders', async (req, res) => {
     }
 });
 
-app.patch('/orders/:id/tracking', async (req, res) => {
+app.patch('/orders/:id/tracking',verifyFBToken, async (req, res) => {
     try {
         const id = req.params.id;
         const { newLogStatus, location = 'N/A', note = '' } = req.body; 
@@ -248,7 +249,7 @@ app.get('/trackings/:trackingId', async (req, res) => {
 
 
 
-app.patch('/orders/cancel/:id', async (req, res) => {
+app.patch('/orders/cancel/:id',verifyFBToken, async (req, res) => {
     try {
         const id = req.params.id;
         
@@ -301,7 +302,7 @@ app.patch('/orders/cancel/:id', async (req, res) => {
     }
 });
 
-app.get('/manager-pending-orders', async (req, res) => {
+app.get('/manager-pending-orders',verifyFBToken, async (req, res) => {
     try {
         const managerEmail = req.query.email; 
         const PENDING_STATUS = 'Pending'; 
@@ -328,7 +329,7 @@ app.get('/manager-pending-orders', async (req, res) => {
 
 
 
-app.patch('/orders/:id/status', async (req, res) => {
+app.patch('/orders/:id/status',verifyFBToken, async (req, res) => {
     try {
         const id = req.params.id;
 
@@ -547,12 +548,20 @@ app.post('/payment-success', async (req, res) => {
           
             res.send(result);
         })
-
+app.get('/users/all',verifyFBToken, async (req, res) => {
+    try {
+        const users = await userCollection.find({}).toArray();
+        res.send(users);
+    } catch (error) {
+        console.error("Error fetching all users:", error);
+        res.status(500).send({ message: 'Failed to retrieve user list' });
+    }
+});
 
 
 
 // Product related API
-app.post('/products', async (req, res) => {
+app.post('/products',verifyFBToken, async (req, res) => {
     try {
         const product = req.body;
         console.log(req.body)
@@ -567,7 +576,7 @@ app.post('/products', async (req, res) => {
 
 
 
-app.delete('/products/:id', async (req, res) => {
+app.delete('/products/:id',verifyFBToken, async (req, res) => {
     try {
         const id = req.params.id;
         
@@ -592,7 +601,7 @@ app.delete('/products/:id', async (req, res) => {
 });
 
 
-app.get('/manager-products', async (req, res) => {
+app.get('/manager-products',verifyFBToken, async (req, res) => {
     try {
         const email = req.query.email; 
 
@@ -630,7 +639,7 @@ app.get('/products', async (req, res) => {
 // for admin only
 
 
-app.patch('/products/:id/toggle-home', async (req, res) => {
+app.patch('/products/:id/toggle-home', verifyFBToken, async (req, res) => {
   
     const id = req.params.id;
     const { showOnHome } = req.body;
@@ -655,7 +664,7 @@ app.patch('/products/:id/toggle-home', async (req, res) => {
     }
 });
 
-app.get('/all-products', async (req, res) => {
+app.get('/all-products',verifyFBToken, async (req, res) => {
     try {
         const cursor = productCollection.find({});
         const result = await cursor.toArray();
@@ -667,7 +676,7 @@ app.get('/all-products', async (req, res) => {
 });
 
 
-app.get('/admin/all-orders', async (req, res) => {
+app.get('/admin/all-orders',verifyFBToken, async (req, res) => {
     try {
         const statusFilter = req.query.status; 
         
@@ -704,18 +713,10 @@ app.get('/admin/all-orders', async (req, res) => {
     }
 });
 
-app.get('/users/all', async (req, res) => {
-    try {
-        const users = await userCollection.find({}).toArray();
-        res.send(users);
-    } catch (error) {
-        console.error("Error fetching all users:", error);
-        res.status(500).send({ message: 'Failed to retrieve user list' });
-    }
-});
 
 
-app.patch('/products/:id', async (req, res) => {
+
+app.patch('/products/:id',verifyFBToken, async (req, res) => {
     try {
         const id = req.params.id;
         const updatedProductData = req.body; 
@@ -765,7 +766,7 @@ app.get('/products', async (req, res) => {
     }
 });
 
-app.get('/products/:id', async (req, res) => {
+app.get('/products/:id',verifyFBToken, async (req, res) => {
     const id = req.params.id;
     if (!ObjectId.isValid(id)) {
         return res.status(400).send({ message: 'Invalid product ID format' });
@@ -785,7 +786,7 @@ app.get('/products/:id', async (req, res) => {
     }
 });
 
-
+// Duplicate may be need to check at last
 app.patch('/products/:id', async (req, res) => {
     try {
         const id = req.params.id;
@@ -823,7 +824,7 @@ app.patch('/products/:id', async (req, res) => {
     }
 });
 // Home Page Products API
-app.get('/our-products/homepage', async (req, res) => {
+app.get('/our-products/homepage',verifyFBToken, async (req, res) => {
     try {
         const cursor = productCollection.find({ showOnHome: true })
         .limit(6)
