@@ -29,7 +29,7 @@ function generateTrackingId() {
 app.use(express.json());
 app.use(cors());
 
-// There are three interceptor 
+// There are 4 interceptor 
  const verifyFBToken = async (req, res, next) => {
 // console.log('headers In the middleware',req.headers?.authorization)
     const token = req.headers.authorization;
@@ -47,37 +47,33 @@ app.use(cors());
     catch (err) {
         return res.status(401).send({ message: 'unauthorized access' })
     }
-
-
-
-
 }
 
+ const verifyAdmin = async (req, res, next) => {
+            const email = req.decoded_email;
+            const query = { email };
+            const user = await userCollection.findOne(query);
 
-//  const verifyAdmin = async (req, res, next) => {
-//             const email = req.decoded_email;
-//             const query = { email };
-//             const user = await userCollection.findOne(query);
+            if (!user || user.role !== 'admin') {
+                return res.status(403).send({ message: 'forbidden access' });
+            }
 
-//             if (!user || user.role !== 'admin') {
-//                 return res.status(403).send({ message: 'forbidden access' });
-//             }
+            next();
+        }
+           const verifyManager = async (req, res, next) => {
+            const email = req.decoded_email;
+            const query = { email };
+            const user = await userCollection.findOne(query);
 
-//             next();
+            if (!user || user.role !== 'manager') {
+                return res.status(403).send({ message: 'forbidden access' });
+            }
 
-//         }
+            next();
+        }
 
-        // const verifyManager = async (req, res, next) => {
-        //     const email = req.decoded_email;
-        //     const query = { email };
-        //     const user = await userCollection.findOne(query);
 
-        //     if (!user || user.role !== 'manager') {
-        //         return res.status(403).send({ message: 'forbidden access' });
-        //     }
-
-        //     next();
-        // }
+     
 
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.wstr9pt.mongodb.net/?appName=Cluster0`;
