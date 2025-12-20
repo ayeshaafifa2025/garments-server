@@ -571,22 +571,64 @@ app.post('/payment-success', async (req, res) => {
     // User related API
 
 // my  previous  code may  be  spoiled
-     app.post('/users', async (req, res) => {
-            const userInfo = req.body;
-            userInfo.role = 'user';
-            userInfo.createdAt = new Date();
-            const email = userInfo.email;
-            const userExists = await userCollection.findOne({ email })
+    //  app.post('/users', async (req, res) => {
+    //         const userInfo = req.body;
+    //         userInfo.role = 'user';
+    //         userInfo.createdAt = new Date();
+    //         const email = userInfo.email;
+    //         const userExists = await userCollection.findOne({ email })
 
-            if (userExists) {
-                return res.send({ message: 'user exists' })
-            }
+    //         if (userExists) {
+    //             return res.send({ message: 'user exists' })
+    //         }
 
-            const result = await userCollection.insertOne(userInfo);
+    //         const result = await userCollection.insertOne(userInfo);
           
-            res.send(result);
-        })
+    //         res.send(result);
+    //     })
 
+
+    app.post('/users', async (req, res) => {
+    try {
+        const userInfo = req.body;
+        const email = userInfo.email;
+
+        const query = { email: email };
+        const currentTime = new Date().toISOString(); 
+        
+        const userExists = await userCollection.findOne(query);
+
+        if (userExists) {
+            const updateDoc = {
+                $set: {
+                    last_loggedIn: currentTime,
+                },
+            };
+            
+            const updateResult = await userCollection.updateOne(query, updateDoc);
+            
+            return res.send({ 
+                message: 'User already exists, last_loggedIn updated.',
+                updatedCount: updateResult.modifiedCount 
+            });
+        }
+
+        const newUserInfo = {
+            ...userInfo,
+            role: 'user',
+            created_at: currentTime,
+            last_loggedIn: currentTime,
+        };
+        
+        const result = await userCollection.insertOne(newUserInfo);
+        
+        res.send(result);
+
+    } catch (error) {
+        console.error("Error processing user info:", error);
+        res.status(500).send({ message: 'Failed to process user data' });
+    }
+});
 
 
 
