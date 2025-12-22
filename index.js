@@ -8,28 +8,25 @@ const port = process.env.PORT || 3000
 const crypto = require("crypto");
 const admin = require("firebase-admin");
 
-
-
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
 const serviceAccount = JSON.parse(decoded);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
-
 function generateTrackingId() {
-    const prefix = "ORD"; // your brand prefix
-    const date = new Date().toISOString().slice(0, 10).replace(/-/g, ""); // YYYYMMDD
-    const random = crypto.randomBytes(3).toString("hex").toUpperCase(); // 6-char random hex
+    const prefix = "ORD"; 
+    const date = new Date().toISOString().slice(0, 10).replace(/-/g, ""); 
+    const random = crypto.randomBytes(3).toString("hex").toUpperCase(); 
 
     return `${prefix}-${date}-${random}`;
 }
-
-
 // middleware
 app.use(express.json());
-app.use(cors());
+app.use(cors(
+   
+));
 
-// There are 4 interceptor 
+// firebase  sdk
  const verifyFBToken = async (req, res, next) => {
 // console.log('headers In the middleware',req.headers?.authorization)
     const token = req.headers.authorization;
@@ -49,6 +46,44 @@ app.use(cors());
     }
 }
 
+ 
+
+const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.wstr9pt.mongodb.net/?appName=Cluster0`;
+
+// Create a MongoClient with a MongoClientOptions object to set the Stable API version
+const client = new MongoClient(uri, {
+  serverApi: {
+    version: ServerApiVersion.v1,
+    strict: true,
+    deprecationErrors: true,
+  }
+});
+
+async function run() {
+  try {
+    // Connect the client to the server	(optional starting in v4.7)
+    // await client.connect();
+    const db = client.db('garments_order_db');
+    const userCollection = db.collection('users');
+    const productCollection = db.collection('products');
+    const ordersCollection = db.collection('orders');
+        const trackingsCollection = db.collection('trackings');
+         const paymentCollection = db.collection('payments');
+const logTracking = async (trackingId, status, location = 'N/A', note = '') => {
+    const detailsText = `${status}${location !== 'N/A' ? ` at ${location}` : ''}${note ? ` (${note})` : ''}`;
+    const log = {
+        trackingId,
+        status,
+        location, 
+        note,     
+        details: detailsText,
+        createdAt: new Date()
+    }
+    
+  
+    const result = await trackingsCollection.insertOne(log); 
+    return result;
+}
  const verifyAdmin = async (req, res, next) => {
             const email = req.decoded_email;
             const query = { email };
@@ -82,52 +117,174 @@ app.use(cors());
 
             next();
         }
+const verifyAdminOrManager = async (req, res, next) => {
+    const email = req.decoded_email;
+    const query = { email };
+    const user = await userCollection.findOne(query);
 
+    if (!user) {
+        return res.status(403).send({ message: 'Forbidden access: User not found.' });
+    }
 
-     
+    const role = user.role;
+    
+    if (role === 'admin' || role === 'manager') {
+        next();
+    } else {
+        return res.status(403).send({ message: 'Forbidden access: Must be an Admin or Manager.' });
+    }
+};
+const verifyBuyerOrManager = async (req, res, next) => {
+    const email = req.decoded_email; 
+    const query = { email };
+    const user = await userCollection.findOne(query); 
 
+    if (!user) {
+        return res.status(403).send({ message: 'Forbidden access: User not found.' });
+    }
 
-const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.wstr9pt.mongodb.net/?appName=Cluster0`;
+    const role = user.role;
+    
+  
+    if (role === 'buyer' || role === 'manager' || role === 'admin') { 
+        next();
+    } else {
+        return res.status(403).send({ message: 'Forbidden access: Must be a Buyer, Manager, or Admin.' });
+    }
+};
+const verifyActiveStatus = async (req, res, next) => {
 
-// Create a MongoClient with a MongoClientOptions object to set the Stable API version
-const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  }
-});
+    const email = req.decoded_email; 
+    const query = { email };
+    const user = await userCollection.findOne(query); 
 
-async function run() {
-  try {
-    // Connect the client to the server	(optional starting in v4.7)
-    await client.connect();
-    const db = client.db('garments_order_db');
-    const userCollection = db.collection('users');
-    const productCollection = db.collection('products');
-    const ordersCollection = db.collection('orders');
-        const trackingsCollection = db.collection('trackings');
-         const paymentCollection = db.collection('payments');
-
-
-const logTracking = async (trackingId, status, location = 'N/A', note = '') => {
-    const detailsText = `${status}${location !== 'N/A' ? ` at ${location}` : ''}${note ? ` (${note})` : ''}`;
-    const log = {
-        trackingId,
-        status,
-        location, 
-        note,     
-        details: detailsText,
-        createdAt: new Date()
+    if (user && user.status === 'suspended') {
+      
+        return res.status(403).send({ 
+            message: 'Forbidden access: Your account is suspended and cannot perform this action.' 
+        });
     }
     
   
-    const result = await trackingsCollection.insertOne(log); 
-    return result;
-}
+    next();
+};
 
 
-     app.post('/orders', async (req, res) => {
+app.get('/admin/dashboard-stats', verifyFBToken, verifyAdmin, async (req, res) => {
+    try {
+        const [totalUsers, totalProducts, totalOrders] = await Promise.all([
+            userCollection.countDocuments(),
+            productCollection.countDocuments(),
+            ordersCollection.countDocuments()
+        ]);
+        const userRoles = await userCollection.aggregate([
+            { $group: { _id: '$role', count: { $sum: 1 } } }
+        ]).toArray();
+        const orderStatuses = await ordersCollection.aggregate([
+            { $group: { _id: '$status', count: { $sum: 1 } } }
+        ]).toArray();
+        const productCategories = await productCollection.aggregate([
+            { $group: { _id: '$category', count: { $sum: 1 } } },
+            { $sort: { count: -1 } } 
+        ]).toArray();
+
+        res.send({
+            totalUsers,
+            totalProducts,
+            totalOrders,
+            userRoles,
+            orderStatuses,
+            productCategories
+        });
+
+    } catch (error) {
+        console.error("Error fetching admin dashboard stats:", error);
+        res.status(500).send({ message: 'Failed to retrieve admin dashboard stats' });
+    }
+});
+
+app.get('/manager/dashboard-stats', verifyFBToken, verifyManager, async (req, res) => {
+    try {
+        const managerEmail = req.decoded_email; 
+
+        const [totalProducts, pendingOrdersCount, approvedOrdersCount] = await Promise.all([
+            productCollection.countDocuments({ managerEmail }),
+            ordersCollection.countDocuments({ managerEmail, status: 'Pending' }),
+            ordersCollection.countDocuments({ managerEmail, status: 'Approved' })
+        ]);
+
+       
+        const stockStats = await productCollection.aggregate([
+            { $match: { managerEmail } }, 
+            {
+                $project: {
+                    stockStatus: {
+                        $cond: {
+                            if: { $lte: ['$availableQuantity', 10] }, 
+                            then: 'Low Stock',
+                            else: 'In Stock'
+                        }
+                    }
+                }
+            },
+            { $group: { _id: '$stockStatus', count: { $sum: 1 } } }
+        ]).toArray();
+
+      
+        const trackingStats = await ordersCollection.aggregate([
+            { $match: { managerEmail, status: 'Approved' } }, 
+            { $group: { _id: '$currentTrackingStatus', count: { $sum: 1 } } }
+        ]).toArray();
+        
+        res.send({
+            totalProducts,
+            pendingOrdersCount,
+            approvedOrdersCount,
+            stockStats,
+            trackingStats
+        });
+
+    } catch (error) {
+        console.error("Error fetching manager dashboard stats:", error);
+        res.status(500).send({ message: 'Failed to retrieve manager dashboard stats' });
+    }
+});
+
+
+app.get('/buyer/dashboard-stats', verifyFBToken, verifyBuyer, async (req, res) => {
+    try {
+        const buyerEmail = req.decoded_email; 
+
+       
+        const [totalOrders, pendingOrders, approvedOrders, deliveredOrders] = await Promise.all([
+            ordersCollection.countDocuments({ buyerEmail }),
+            ordersCollection.countDocuments({ buyerEmail, status: 'Pending' }),
+            ordersCollection.countDocuments({ buyerEmail, status: 'Approved' }),
+            ordersCollection.countDocuments({ buyerEmail, status: 'Delivered' })
+        ]);
+
+      
+        const statusStats = await ordersCollection.aggregate([
+            { $match: { buyerEmail } }, 
+            { $group: { _id: '$status', count: { $sum: 1 } } },
+            { $sort: { count: -1 } }
+        ]).toArray();
+        
+        res.send({
+            totalOrders,
+            pendingOrders,
+            approvedOrders,
+            deliveredOrders,
+            statusStats
+        });
+
+    } catch (error) {
+        console.error("Error fetching buyer dashboard stats:", error);
+        res.status(500).send({ message: 'Failed to retrieve buyer dashboard stats' });
+    }
+});
+
+     app.post('/orders',verifyFBToken,verifyBuyer, async (req, res) => {
             const order = req.body;
             const trackingId = generateTrackingId();
            
@@ -139,8 +296,7 @@ const logTracking = async (trackingId, status, location = 'N/A', note = '') => {
             const result = await ordersCollection.insertOne(order);
             res.send(result)
         })
-
-       app.get('/orders/by-id/:id', async (req, res) => {
+       app.get('/orders/by-id/:id',verifyFBToken,verifyBuyerOrManager, async (req, res) => {
     try {
         const id = req.params.id;
         if (!id) {
@@ -160,11 +316,7 @@ const logTracking = async (trackingId, status, location = 'N/A', note = '') => {
         res.status(500).send({ message: 'Failed to retrieve order' });
     }
 }); 
-
-
-
-
-app.get('/orders/:email',verifyFBToken, async (req, res) => {
+app.get('/orders/:email',verifyFBToken,verifyBuyer, async (req, res) => {
     try {
         const email = req.params.email;
         // console.log(req.headers)
@@ -188,10 +340,7 @@ app.get('/orders/:email',verifyFBToken, async (req, res) => {
         res.status(500).send({ message: 'Failed to retrieve orders' });
     }
 });
-
-
-
-app.get('/manager-approved-orders', async (req, res) => {
+app.get('/manager-approved-orders',verifyFBToken,verifyManager, async (req, res) => {
     try {
         const managerEmail = req.query.email; 
         
@@ -217,8 +366,7 @@ app.get('/manager-approved-orders', async (req, res) => {
         res.status(500).send({ message: 'Failed to fetch approved orders' });
     }
 });
-
-app.patch('/orders/:id/tracking', async (req, res) => {
+app.patch('/orders/:id/tracking', verifyFBToken,verifyManager,async (req, res) => {
     try {
         const id = req.params.id;
         const { newLogStatus, location = 'N/A', note = '' } = req.body; 
@@ -272,9 +420,7 @@ app.patch('/orders/:id/tracking', async (req, res) => {
         res.status(500).send({ message: 'Failed to update tracking status' });
     }
 });
-
-
-app.get('/trackings/:trackingId', async (req, res) => {
+app.get('/trackings/:trackingId',verifyFBToken,verifyBuyerOrManager, async (req, res) => {
     try {
         const trackingId = req.params.trackingId;
         if (!trackingId) {
@@ -282,7 +428,7 @@ app.get('/trackings/:trackingId', async (req, res) => {
         }
         
         const query = { trackingId: trackingId };
-        const trackings = await trackingsCollection.find(query).sort({ createdAt: 1 }).toArray(); // পুরানো থেকে নতুন
+        const trackings = await trackingsCollection.find(query).sort({ createdAt: 1 }).toArray(); 
 
         res.send(trackings);
     } catch (error) {
@@ -290,11 +436,7 @@ app.get('/trackings/:trackingId', async (req, res) => {
         res.status(500).send({ message: 'Failed to retrieve tracking logs' });
     }
 });
-
-
-
-
-app.patch('/orders/cancel/:id', async (req, res) => {
+app.patch('/orders/cancel/:id',verifyFBToken,verifyBuyer, async (req, res) => {
     try {
         const id = req.params.id;
         
@@ -346,8 +488,7 @@ app.patch('/orders/cancel/:id', async (req, res) => {
         res.status(500).send({ message: 'Failed to cancel order', error: error.message });
     }
 });
-
-app.get('/manager-pending-orders',async (req, res) => {
+app.get('/manager-pending-orders',verifyFBToken,verifyManager,async (req, res) => {
     try {
         const managerEmail = req.query.email; 
         const PENDING_STATUS = 'Pending'; 
@@ -371,10 +512,7 @@ app.get('/manager-pending-orders',async (req, res) => {
         res.status(500).send({ message: 'Failed to fetch pending orders' });
     }
 });
-
-
-
-app.patch('/orders/:id/status', async (req, res) => {
+app.patch('/orders/:id/status',verifyFBToken,verifyActiveStatus, async (req, res) => {
     try {
         const id = req.params.id;
 
@@ -424,9 +562,7 @@ app.patch('/orders/:id/status', async (req, res) => {
         res.status(500).send({ message: 'Failed to update order status' });
     }
 });
-
-
-app.post('/payment-checkout-session', async (req, res) => {
+app.post('/payment-checkout-session',verifyFBToken,verifyBuyer, async (req, res) => {
     const orderInfo = req.body;
     
 
@@ -476,7 +612,7 @@ app.post('/payment-checkout-session', async (req, res) => {
             ],
             mode: 'payment',
             metadata: {
-                // সংক্ষিপ্ত ডেটা পাঠানো হলো
+               
                 orderData: essentialOrderDataString, 
                 trackingId: trackingId, 
             },
@@ -493,20 +629,18 @@ app.post('/payment-checkout-session', async (req, res) => {
         res.status(500).send({ error: error.message });
     }
 });
-
-
-app.post('/payment-success', async (req, res) => { 
+app.post('/payment-success', verifyFBToken, verifyBuyer, async (req, res) => { 
     const sessionId = req.query.session_id;
     
     try {
         const session = await stripe.checkout.sessions.retrieve(sessionId);
 
         const transactionId = session.payment_intent;
-        
         const paymentExist = await paymentCollection.findOne({ transactionId });
         if (paymentExist) {
             return res.send({
-                message: 'already exists',
+                success: true,
+                message: 'already exists', 
                 transactionId,
                 trackingId: paymentExist.trackingId
             });
@@ -538,14 +672,11 @@ app.post('/payment-success', async (req, res) => {
             };
 
             const resultOrder = await ordersCollection.insertOne(newOrder);
-            
-            // ⭐ নতুন যুক্ত করা লাইন: PayFirst অর্ডারের জন্য 'Pending' স্ট্যাটাস লগ করা
+   
             if(resultOrder.insertedId){
-                 await logTracking(trackingId, 'Pending'); 
+                await logTracking(trackingId, 'Pending'); 
             }
-            // ⭐
             
-
             const payment = {
                 amount: session.amount_total / 100,
                 currency: session.currency,
@@ -558,7 +689,6 @@ app.post('/payment-success', async (req, res) => {
             };
             
             await paymentCollection.insertOne(payment);
-            // logTracking(trackingId, 'order_paid'); 
 
             return res.send({
                 success: true,
@@ -566,7 +696,7 @@ app.post('/payment-success', async (req, res) => {
                 transactionId: transactionId,
             });
         }
-        return res.send({ success: false });
+        return res.send({ success: false, message: "Payment status is not 'paid'." });
 
     } catch (error) {
         console.error("Payment Success Handler Error:", error);
@@ -574,31 +704,12 @@ app.post('/payment-success', async (req, res) => {
     }
 });
 
-
-    // User related API
-
-// my  previous  code may  be  spoiled
-    //  app.post('/users', async (req, res) => {
-    //         const userInfo = req.body;
-    //         userInfo.role = 'user';
-    //         userInfo.createdAt = new Date();
-    //         const email = userInfo.email;
-    //         const userExists = await userCollection.findOne({ email })
-
-    //         if (userExists) {
-    //             return res.send({ message: 'user exists' })
-    //         }
-
-    //         const result = await userCollection.insertOne(userInfo);
-          
-    //         res.send(result);
-    //     })
-
-
-    app.post('/users', async (req, res) => {
+app.post('/users',verifyFBToken, async (req, res) => {
     try {
-        const userInfo = req.body;
+        const userInfo = req.body; 
         const email = userInfo.email;
+       
+        const demandedRole = userInfo.demandedRole; 
 
         const query = { email: email };
         const currentTime = new Date().toISOString(); 
@@ -606,6 +717,7 @@ app.post('/payment-success', async (req, res) => {
         const userExists = await userCollection.findOne(query);
 
         if (userExists) {
+          
             const updateDoc = {
                 $set: {
                     last_loggedIn: currentTime,
@@ -620,9 +732,14 @@ app.post('/payment-success', async (req, res) => {
             });
         }
 
+        
         const newUserInfo = {
-            ...userInfo,
+            displayName: userInfo.displayName,
+            email: userInfo.email,
+            photoURL: userInfo.photoURL,
             role: 'user',
+            demandedRole: demandedRole, 
+            status: 'pending', 
             created_at: currentTime,
             last_loggedIn: currentTime,
         };
@@ -636,25 +753,95 @@ app.post('/payment-success', async (req, res) => {
         res.status(500).send({ message: 'Failed to process user data' });
     }
 });
-
-
-
-
-app.get('/users/all', async (req, res) => {
+app.patch('/users/update-status/:id', verifyFBToken,verifyAdmin, async (req, res) => {
     try {
-        const users = await userCollection.find({}).toArray();
-        res.send(users);
+        const id = req.params.id;
+        const updateFields = req.body; 
+
+     
+
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = {
+            $set: updateFields,
+        };
+
+        const result = await userCollection.updateOne(filter, updateDoc);
+
+        if (result.modifiedCount > 0) {
+            res.send({ modifiedCount: result.modifiedCount, message: 'User status/role updated successfully.' });
+        } else {
+            res.status(400).send({ modifiedCount: 0, message: 'User not found or no changes made.' });
+        }
     } catch (error) {
-        console.error("Error fetching all users:", error);
-        res.status(500).send({ message: 'Failed to retrieve user list' });
+        console.error("Error updating user status:", error);
+        res.status(500).send({ message: 'Failed to update user status/role' });
     }
 });
 
+app.get('/users/:email/status-role-info', verifyFBToken, async (req, res) => {
+    try {
+        const email = req.params.email;
+        
+       
+        const query = { email: email };
+        
+      
+        const user = await userCollection.findOne(query, { projection: { role: 1, status: 1, suspendReason: 1, suspendFeedback: 1 } }); 
 
+        if (user) {
+            res.send({ 
+                role: user.role, 
+                status: user.status, 
+                suspendReason: user.suspendReason || null,
+                suspendFeedback: user.suspendFeedback || null
+            });
+        } else {
+            
+            res.status(404).send({ 
+                role: 'user', 
+                status: 'pending', 
+                message: 'User not found in DB.' 
+            });
+        }
 
+    } catch (error) {
+        console.error("Error fetching user role/status info:", error);
+        res.status(500).send({ message: 'Failed to retrieve user info' });
+    }
+});
 
-// Product related API
-app.post('/products', async (req, res) => {
+app.get('/users/all', verifyFBToken,verifyAdmin, async (req, res) => {
+    try {
+        const { search, role, status } = req.query; 
+        let query = {}; 
+        if (search) {
+            const searchRegex = new RegExp(search, 'i');
+            query.$or = [
+                { displayName: { $regex: searchRegex } },
+                { email: { $regex: searchRegex } }
+            ];
+        }
+
+        if (role && role !== 'all') {
+            query.role = role;
+        }
+        if (status && status !== 'all') {
+           
+            query.status = status;
+        }
+
+    
+        const users = await userCollection.find(query).toArray();
+        
+        res.send(users);
+
+    } catch (error) {
+        console.error("Error fetching all users with filter:", error);
+        res.status(500).send({ message: 'Failed to retrieve user data' });
+    }
+});
+
+app.post('/products',verifyFBToken,verifyManager, async (req, res) => {
     try {
         const product = req.body;
         console.log(req.body)
@@ -666,10 +853,7 @@ app.post('/products', async (req, res) => {
         res.status(500).send({ message: 'Product insert failed' });
     }
 });
-
-
-
-app.delete('/products/:id', async (req, res) => {
+app.delete('/products/:id',verifyFBToken, verifyAdminOrManager,async (req, res) => {
     try {
         const id = req.params.id;
         
@@ -692,9 +876,7 @@ app.delete('/products/:id', async (req, res) => {
         res.status(500).send({ message: 'Failed to delete product.' });
     }
 });
-
-
-app.get('/manager-products', async (req, res) => {
+app.get('/manager-products',verifyFBToken,verifyManager, async (req, res) => {
     try {
         const email = req.query.email; 
 
@@ -717,22 +899,36 @@ app.get('/manager-products', async (req, res) => {
         res.status(500).send({ message: 'Failed to fetch manager products' });
     }
 });
-// for public
+
 app.get('/products', async (req, res) => {
     try {
-        const cursor = productCollection.find({});
-        const result = await cursor.toArray();
-        res.send(result);
+       
+        const page = parseInt(req.query.page) || 1;
+        const size = parseInt(req.query.size) || 10; 
+
+      
+        const skip = (page - 1) * size;
+        
+       
+        const count = await productCollection.countDocuments({});
+
+      
+        const cursor = productCollection.find({})
+            .skip(skip) 
+            .limit(size); 
+            
+        const products = await cursor.toArray();
+
+        
+        res.send({ products, count });
+        
     } catch (error) {
-        console.error("Error fetching all products:", error);
-        res.status(500).send({ message: 'Failed to fetch all products' });
+        console.error("Error fetching all products with pagination:", error);
+        res.status(500).send({ message: 'Failed to fetch products with pagination' });
     }
 });
 
-// for admin only
-
-
-app.patch('/products/:id/toggle-home',  async (req, res) => {
+app.patch('/products/:id/toggle-home', verifyFBToken,verifyAdmin, async (req, res) => {
   
     const id = req.params.id;
     const { showOnHome } = req.body;
@@ -756,8 +952,7 @@ app.patch('/products/:id/toggle-home',  async (req, res) => {
         res.status(500).send({ message: 'Failed to update product status' });
     }
 });
-
-app.get('/all-products', async (req, res) => {
+app.get('/all-products',verifyFBToken,verifyAdmin, async (req, res) => {
     try {
         const cursor = productCollection.find({});
         const result = await cursor.toArray();
@@ -767,9 +962,7 @@ app.get('/all-products', async (req, res) => {
         res.status(500).send({ message: 'Failed to fetch all products' });
     }
 });
-
-
-app.get('/admin/all-orders', async (req, res) => {
+app.get('/admin/all-orders',verifyFBToken,verifyAdmin, async (req, res) => {
     try {
         const statusFilter = req.query.status; 
         
@@ -805,16 +998,11 @@ app.get('/admin/all-orders', async (req, res) => {
         res.status(500).send({ message: 'Failed to retrieve all orders' });
     }
 });
-
-
-
-
-app.patch('/products/:id', async (req, res) => {
+app.patch('/products/:id',verifyFBToken,verifyAdminOrManager, async (req, res) => {
     try {
         const id = req.params.id;
         const updatedProductData = req.body; 
         
-     
         if (!ObjectId.isValid(id)) {
             return res.status(400).send({ message: 'Invalid product ID format.' });
         }
@@ -823,13 +1011,13 @@ app.patch('/products/:id', async (req, res) => {
         const options = { upsert: false }; 
 
         
-        const { _id, sellerEmail, ...dataToUpdate } = updatedProductData;
+        const { _id, managerEmail, ...dataToUpdate } = updatedProductData;
         
 
         const updateDoc = {
             $set: {
                 ...dataToUpdate,
-            
+            lastUpdated: new Date()
             },
         };
 
@@ -845,20 +1033,6 @@ app.patch('/products/:id', async (req, res) => {
         res.status(500).send({ message: 'Failed to update product.' });
     }
 });
-
-
-
-app.get('/products', async (req, res) => {
-    try {
-        const cursor = productCollection.find({});
-        const result = await cursor.toArray();
-        res.send(result);
-    } catch (error) {
-        console.error("Error fetching all products:", error);
-        res.status(500).send({ message: 'Failed to fetch all products' });
-    }
-});
-
 app.get('/products/:id', async (req, res) => {
     const id = req.params.id;
     if (!ObjectId.isValid(id)) {
@@ -879,44 +1053,6 @@ app.get('/products/:id', async (req, res) => {
     }
 });
 
-// Duplicate may be need to check at last
-app.patch('/products/:id', async (req, res) => {
-    try {
-        const id = req.params.id;
-        const updatedProductData = req.body; 
-        
-     
-        if (!ObjectId.isValid(id)) {
-            return res.status(400).send({ message: 'Invalid product ID format.' });
-        }
-
-        const filter = { _id: new ObjectId(id) };
-        const options = { upsert: false }; 
-
-        
-        const { _id, sellerEmail, ...dataToUpdate } = updatedProductData;
-        
-
-        const updateDoc = {
-            $set: {
-                ...dataToUpdate,
-            
-            },
-        };
-
-        const result = await productCollection.updateOne(filter, updateDoc, options);
-
-        if (result.matchedCount === 0) {
-            return res.status(404).send({ message: 'Product not found for update.' });
-        }
-        
-        res.send(result);
-    } catch (error) {
-        // console.error('Error patching product:', error);
-        res.status(500).send({ message: 'Failed to update product.' });
-    }
-});
-// Home Page Products API
 app.get('/our-products/homepage', async (req, res) => {
     try {
         const cursor = productCollection.find({ showOnHome: true })
@@ -931,17 +1067,12 @@ app.get('/our-products/homepage', async (req, res) => {
     }
 });
 
-
-    // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
+    // await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
   } finally {
-    // Ensures that the client will close when you finish/error
-    // await client.close();
   }
 }
 run().catch(console.dir);
-
 
 app.get('/', (req, res) => {
   res.send(' Server is running')
